@@ -14,7 +14,7 @@ sd_lock=$temp_dir/sd_$(date +%s).lock
 vmd_lock=$temp_dir/vmd_$(date +%s).lock
 
 calc() {
-  awk "BEGIN {print $*}" | xargs printf %.f
+  printf "%s\n" "$*" | bc -l
 }
 
 edit_config() {
