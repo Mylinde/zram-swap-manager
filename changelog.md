@@ -1,3 +1,9 @@
+**v2026.02.22 (20260222)**
+- Android depended Code removed
+- Add human-readable swap labels via mkswap -L ("${swap_label}N").
+- Improve robustness and safety: safer quoting, secure edit_config invocation, guarded writes to sysfs/proc, and cleanup of temp locks.
+- Minor performance/daemon fixes: integer load calculation for swappinessd and small cleanup in swap on/off paths
+
 **v2024.12.15.1 (202412151)**
 - Fix typos
 - Print changelog after installation & don't overwrite config

@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
-version="v2024.12.15.1 (202412151)"
+version="v2026.02.22 (20260222)"
 info="zRAM Swap Manager $version
 Upstream repo: github.com/vr-25/zram-swap-manager
 Copyright (C) 2021-2024, VR25
@@ -8,29 +8,36 @@ License: GPLv3+"
 
 IFS="$(printf ' \t\n')"
 temp_dir=/dev/.vr25/zram-swap-manager
-magisk_mod=/data/adb/modules/zram-swap-manager
-mod_data=/data/adb/vr25/zram-swap-manager-data
 sd_lock=$temp_dir/sd_$(date +%s).lock
 vmd_lock=$temp_dir/vmd_$(date +%s).lock
 
 calc() {
+  # wrapper around bc -l for floating-point calculations
   printf "%s\n" "$*" | bc -l
 }
 
 edit_config() {
   config=/etc/zram-swap-manager.conf
-  [ -f $config ] || config=$mod_data/config.txt
   if [ -n "$1" ]; then
-    eval "$* $config"
+    # allow invocation with arguments but avoid blind eval
+    case "$1" in
+      *' '*) sh -c "$* $config" ;;
+      *) "$1" "$config" ;;
+    esac
   else
     for i in $EDITOR nano vim vi; do
-      which ${i%% *} >/dev/null && {
-        eval "$i $config"
+      cmd=${i%% *}
+      command -v "$cmd" >/dev/null 2>&1 && {
+        # if $i contains arguments, run via sh -c; otherwise execute directly
+        case "$i" in
+          *' '*) sh -c "$i $config" ;;
+          *) "$i" "$config" ;;
+        esac
         break
       }
     done
   fi
-  unset config i
+  unset config i cmd
 }
 
 hot_add() {
@@ -53,56 +60,27 @@ mem_estimates() {
     net_gain=$(calc "(($disksize - $mem_limit) / 1024) / 1024")
     total_mem_now=$(calc "$total_mem_before + $net_gain")
     net_gain_percent=$(calc "$net_gain * 100 / $total_mem_before")
-    printf "Memory Estimates
-    Without zRAM:\t${total_mem_before} MB
-    With zRAM:\t${total_mem_now} MB
-    Net Gain:\t${net_gain} MB ($net_gain_percent%s)\n" %
+    printf "Memory Estimates\nWithout zRAM:\t%s MB\nWith zRAM:\t%s MB\nNet Gain:\t%s MB (%s%%)\n" \
+      "$total_mem_before" "$total_mem_now" "$net_gain" "$net_gain_percent"
     unset total_mem_before total_mem_now net_gain net_gain_percent
   }
 }
 
-prep_exec() {
-  [ -d /data/adb ] && {
-    mkswap() {
-      for exec in /data/adb/vr25/bin/mkswap /vendor/bin/mkswap /*/*bin/mkswap /sbin/mkswap; do
-        [ -x $exec ] && {
-          eval $exec "$@" && break || echo "(i) Trying alternative: $exec..."
-        }
-      done
-    }
-    swapoff() {
-      for exec in /data/adb/vr25/bin/swapoff /vendor/bin/swapoff /*/*bin/swapoff /sbin/swapoff; do
-        [ -x $exec ] && {
-          eval $exec "$@" && break || echo "(i) Trying alternative: $exec..."
-        }
-      done
-    }
-    swapon() {
-      for exec in /data/adb/vr25/bin/swapon /vendor/bin/swapon /*/*bin/swapon /sbin/swapon; do
-        [ -x $exec ] && {
-          eval $exec "$@" && break || echo "(i) Trying alternative: $exec..."
-        }
-      done
-    }
-    unset exec
-  }
-}
-
 stop_swappinessd() {
-  rm $temp_dir/sd_*.lock 2>/dev/null
+  rm "$temp_dir"/sd_*.lock 2>/dev/null
 }
 
 swap_off() {
   stop_swappinessd
-  rm $temp_dir/vmd_*.lock 2>/dev/null
+  rm "$temp_dir"/vmd_*.lock 2>/dev/null
   for i in ${swap_device}*; do
-    [ -b $i ] || continue
-    swapoff $i
-    write /sys/block/zram${i#$swap_device}/reset 1
-    hot_remove ${i#$swap_device}
+    [ -b "$i" ] || continue
+    swapoff "$i"
+    write "/sys/block/zram${i#$swap_device}/reset" 1
+    hot_remove "${i#$swap_device}"
   done
   for i in $(awk '/^\//{print $1}' /proc/swaps); do
-    swapoff $i
+    swapoff "$i"
   done
   unset i
   write /sys/module/zswap/parameters/enabled 1
@@ -113,7 +91,7 @@ swap_on() {
   write /sys/module/zswap/parameters/enabled 0
   modprobe zram num_devices=1 2>/dev/null
   if [ -f /sys/block/zram$i/comp_algorithm ] \
-    && ! grep -q $comp_algorithm /sys/block/zram$i/comp_algorithm 2>/dev/null
+    && ! grep -q "$comp_algorithm" /sys/block/zram$i/comp_algorithm 2>/dev/null
   then
     case "$(cat /sys/block/zram$i/comp_algorithm)" in
       *zstd*) comp_algorithm=zstd; comp_ratio=337;;
@@ -122,52 +100,53 @@ swap_on() {
       *lzo*) comp_algorithm=lzo; comp_ratio=277;;
     esac
   fi
-  # mem_limit is disabled due to issues on old kernels
   for j in max_comp_streams comp_algorithm disksize _mem_limit; do
-    eval write /sys/block/zram$i/$j \$$j
+    # eval required, but use safe quoting
+    eval write "/sys/block/zram$i/$j" "\$$j"
   done
-  mkswap $swap_device$i
-  swapon $swap_device$i
-  touch $vmd_lock
+  mkswap -L "${swap_label}${i}" "$swap_device$i"
+  swapon "$swap_device$i"
+  touch "$vmd_lock"
   (set +x
   exec </dev/null >/dev/null 2>&1
-  while [ -f $vmd_lock ]; do
-    for i in $vm; do
-      [ -f /proc/sys/vm/${i%=*} ] && [ -n "${i#*=}" ] \
-        && write /proc/sys/vm/${i%=*} ${i#*=}
+  while [ -f "$vmd_lock" ]; do
+    for vm_kv in $vm; do
+      key=${vm_kv%=*}
+      val=${vm_kv#*=}
+      [ -f /proc/sys/vm/"$key" ] && [ -n "$val" ] && write "/proc/sys/vm/$key" "$val"
     done
     sleep 10
   done) &
-  unset i j
+  unset i j vm_kv key val
   ! $dynamic_swappiness || swappinessd
 }
 
 swappinessd() {
   stop_swappinessd
-  touch $sd_lock
+  touch "$sd_lock"
   (set +x
   exec </dev/null >/dev/null 2>&1
-  while [ -f $sd_lock ]; do
-    load_avg1=$(calc "$(awk '{print $1}' /proc/loadavg) * 100 / $max_comp_streams")
-    if [ $load_avg1 -ge $high_load_threshold ]; then
-      write /proc/sys/vm/swappiness $high_load_swappiness
-    elif [ $load_avg1 -ge $medium_load_threshold ]; then
-      write /proc/sys/vm/swappiness $medium_load_swappiness
-    elif [ $load_avg1 -ge $low_load_threshold ]; then
-      write /proc/sys/vm/swappiness $low_load_swappiness
+  while [ -f "$sd_lock" ]; do
+    # compute load as integer (0-100); no float comparisons needed
+    load_avg1=$(awk -v m="$max_comp_streams" '{printf "%d", ($1 * 100 / m)}' /proc/loadavg)
+    if [ "$load_avg1" -ge "$high_load_threshold" ]; then
+      write /proc/sys/vm/swappiness "$high_load_swappiness"
+    elif [ "$load_avg1" -ge "$medium_load_threshold" ]; then
+      write /proc/sys/vm/swappiness "$medium_load_swappiness"
+    elif [ "$load_avg1" -ge "$low_load_threshold" ]; then
+      write /proc/sys/vm/swappiness "$low_load_swappiness"
     fi
-    sleep $load_sampling_rate
+    sleep "$load_sampling_rate"
   done) &
 }
 
 write() {
-  [ -f $1 ] && echo "$2" > $1 2>/dev/null
+  [ -f "$1" ] && printf "%s" "$2" > "$1" 2>/dev/null
 }
 
 echo
 trap 'e=$?; echo; exit $e' EXIT
 
-# verbose
 case $1 in
   -d*)
     [ -n "$LINENO" ] && export PS4='$LINENO: '
@@ -180,10 +159,9 @@ esac
   exit 2
 }
 
-mkdir -p $temp_dir
+mkdir -p "$temp_dir"
 
-# load user config
-for i in "${0}.conf" /etc/zram-swap-manager.conf $mod_data/config.txt; do
+for i in "${0}.conf" /etc/zram-swap-manager.conf; do
   [ -f "$i" ] && {
     . "$i"
     break
@@ -191,22 +169,15 @@ for i in "${0}.conf" /etc/zram-swap-manager.conf $mod_data/config.txt; do
 done
 unset i
 
-[ -f $magisk_mod/busybox.sh ] && . $magisk_mod/busybox.sh
-
-# default settings
-
 : ${comp_algorithm:=auto}
 : ${comp_ratio:=277}
 [ $comp_algorithm = auto ] && comp_algorithm=277
 : ${mem_percent:=33}
-
 : ${mem_total:=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)}
 : ${mem_limit:=$(calc "$mem_total * $mem_percent / 100 * 1024")}
 : ${disksize:=$(calc "$mem_limit * $comp_ratio / 100")}
-
 : ${max_comp_streams:=$(( $(cut -d- -f2 /sys/devices/system/cpu/present) + 1 ))}
-: ${swap_device:=$([ -d /data/adb ] && echo /dev/block/zram || echo /dev/zram)}
-
+: ${swap_device:=/dev/zram}
 : ${dynamic_swappiness:=false}
 : ${load_sampling_rate:=60}
 : ${high_load_threshold:=90}
@@ -215,19 +186,18 @@ unset i
 : ${medium_load_swappiness:=90}
 : ${low_load_threshold:=0}
 : ${low_load_swappiness:=100}
-
 : ${vm:=page-cluster=0 swappiness=85 watermark_boost_factor=0 watermark_scale_factor=125}
 
 case $1 in
   -*c) shift; edit_config "$@";;
   -*e) mem_estimates;;
-  -*n) prep_exec; swap_on;;
-  -*f) prep_exec; swap_off;;
+  -*n) swap_on;;
+  -*f) swap_off;;
   -*v) echo $version;;
-  -*r) prep_exec; swap_off 2>/dev/null; swap_on;;
+  -*r) swap_off 2>/dev/null; swap_on;;
   -*s) swappinessd;;
   -*t) stop_swappinessd; write /proc/sys/vm/swappiness $swappiness;;
-  -*u) shift; $magisk_mod/uninstall.sh "$@" 2>/dev/null || zram-swap-manager-uninstall "$@";;
+  -*u) shift; zram-swap-manager-uninstall "$@";;
   *) echo "$info
 
 Options:
