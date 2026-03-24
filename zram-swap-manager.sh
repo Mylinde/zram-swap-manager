@@ -13,7 +13,7 @@ vmd_lock=$temp_dir/vmd_$(date +%s).lock
 
 calc() {
   # wrapper around bc -l for floating-point calculations
-  printf "%s\n" "$*" | bc -l
+  printf "%s\n" "$*" | bc
 }
 
 edit_config() {
