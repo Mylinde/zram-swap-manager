@@ -129,12 +129,25 @@ swappinessd() {
   while [ -f "$sd_lock" ]; do
     # compute load as integer (0-100); no float comparisons needed
     load_avg1=$(awk -v m="$max_comp_streams" '{printf "%d", ($1 * 100 / m)}' /proc/loadavg)
+
+    # calculate zRAM utilization
+    zram_used=$(awk '{print $3}' /sys/block/zram0/mm_stat || echo 0)
+    zram_size=$(cat /sys/block/zram0/disksize 2>/dev/null || echo 1)
+    zram_percent=$((zram_used * 100 / zram_size))
+
     if [ "$load_avg1" -ge "$high_load_threshold" ]; then
       write /proc/sys/vm/swappiness "$high_load_swappiness"
     elif [ "$load_avg1" -ge "$medium_load_threshold" ]; then
       write /proc/sys/vm/swappiness "$medium_load_swappiness"
     elif [ "$load_avg1" -ge "$low_load_threshold" ]; then
       write /proc/sys/vm/swappiness "$low_load_swappiness"
+    fi
+    
+    # drop_caches during critical zRAM pressure or high load to prevent OOM
+    if [ "$zram_percent" -gt 80 ]; then
+      sync && write /proc/sys/vm/drop_caches 2
+    elif [ "$zram_percent" -gt 70 ] && [ "$load_avg1" -ge "$high_load_threshold" ]; then
+      sync && write /proc/sys/vm/drop_caches 1
     fi
     sleep "$load_sampling_rate"
   done) &
