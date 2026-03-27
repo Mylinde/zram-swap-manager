@@ -1,3 +1,6 @@
+**v2026.03.27 (20260327)**
+- Add zRAM utilization monitoring and optimized cache dropping
+
 **v2026.02.22 (20260222)**
 - Android depended Code removed
 - Add human-readable swap labels via mkswap -L ("${swap_label}N").
